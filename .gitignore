@@ -1,0 +1,8 @@
+.env
+.chroma-db/
+__pycache__/
+*.pyc
+ingest_manifest.jsontalentbridge.log
+talentbridge_errors.log
+logs/
+*.log

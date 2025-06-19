@@ -1,0 +1,7 @@
+python-dotenv
+requests
+msal
+python-docx
+openai
+chromadb
+fnmatch
