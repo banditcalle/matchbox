@@ -39,6 +39,8 @@ python Test.py
 - `get_opps.py` — Fetches sales opportunities from Microsoft Dynamics 365, matches them with top consultant resumes using semantic search, and generates enhanced opportunity descriptions with match percentages using OpenAI GPT.
 - `match_prompts.py` — Contains logic for embedding, searching, and matching opportunities to consultant resumes, and generating enhanced descriptions.
 - `getSharePoint.py`, `get_share_point.py`, `test2.py`, `cv_processor.py`, `dedupe_chroma.py`, `queryVectorDB.py` — Additional scripts for SharePoint, data processing, deduplication, querying, and matching.
+- `get_employees.py` — Fetches employees from Dynamics 365, prints their name, email, and resolves their company name using `get_companies.py`.
+- `get_companies.py` — Fetches and resolves company (subsidiary) labels from Dynamics 365 option sets.
 - `Infile_temp/AvailableConsultants.xlsx` — Example input file (not processed by the pipeline).
 - `__pycache__/` — Python bytecode cache directory.
 
@@ -52,3 +54,10 @@ This project is for internal use. Please ensure you comply with your organizatio
 # banditcalle-TalentBridge
 Bildlig koppling mellan konsulternas kompetens och affärsbehov.
 https://agroup.sharepoint.com/sites/CV/Delade%20dokument/Forms/AllItems.aspx?viewid=1451e3ba%2D9c9e%2D49df%2Db980%2D5455addd4a46&newTargetListUrl=%2Fsites%2FCV%2FDelade%20dokument&viewpath=%2Fsites%2FCV%2FDelade%20dokument%2FForms%2FAllItems%2Easpx
+
+## Employee Fetch Example
+To print all employees with their company names:
+```powershell
+python get_employees.py
+```
+This will output each consultant's ID, name, email, subsidiary value, and the resolved company name.
