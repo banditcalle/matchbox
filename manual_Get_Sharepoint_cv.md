@@ -48,6 +48,25 @@ For each sales opportunity, you receive an AI-enhanced description and a list of
 
 ---
 
+## Employee and Company Automation (`get_employees.py` & `get_companies.py`)
+
+### Overview
+- `get_employees.py` fetches employees from Dynamics 365 and, for each, resolves the company name using `get_companies.py`.
+- For each employee, the script can now automatically trigger SharePoint CV ingestion by calling `get_cv_share_point.py`'s `run_ingestion` function, passing the employee name as `FIELD_VALUE` and the company name as `TOP_FOLDER`.
+- If the specified company folder is not found in SharePoint, the process logs an error and skips that employee, continuing with the rest.
+
+### Logging Improvements
+- All errors and warnings (such as missing folders) are logged to `logs/get_cv_share_point_errors.log`.
+- The pipeline is robust: missing folders or other issues do not stop the process, but are logged and skipped.
+
+### Example Workflow
+1. Run `get_employees.py` to process all employees:
+    - For each employee, the script attempts to ingest their CV from SharePoint using the resolved company folder.
+    - If the folder is missing, the error is logged and the script continues.
+2. Review `logs/get_cv_share_point_errors.log` for any missing folders or issues.
+
+---
+
 ## Logging
 
 All logging output (including errors and warnings) is now written to files in the `logs/` directory:

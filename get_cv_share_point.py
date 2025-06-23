@@ -244,8 +244,8 @@ def run_ingestion(FIELD_VALUE, TOP_FOLDER):
         root_items = list_children(token, drive_id)
         top = next((i for i in root_items if i["name"] == TOP_FOLDER and "folder" in i), None)
         if not top:
-            logger.error(f"Top-level folder '{TOP_FOLDER}' not found in library '{LIBRARY_NAME}'.")
-            raise RuntimeError(f"Top-level folder '{TOP_FOLDER}' not found in library '{LIBRARY_NAME}'.")
+            logger.error(f"Top-level folder '{TOP_FOLDER}' not found in library '{LIBRARY_NAME}'. Skipping this ingestion run.")
+            return  # Skip this post if not found
 
         # 4) Filter second-level subfolders by FIELD_VALUE
         second_items = list_children(token, drive_id, parent_id=top["id"])

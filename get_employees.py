@@ -4,6 +4,7 @@ import requests
 import json
 import get_companies as gc
 from requests.exceptions import HTTPError
+import get_cv_share_point as cvsp
 
 # --- 0. Debug: make sure you’re using the right org URL ---
 CRM_URL = os.getenv("DYNAMICS_RESOURCE")  # e.g. https://avegagroup.crm4.dynamics.com
@@ -110,12 +111,20 @@ def get_employees():
     for c in data:
         subsidiary_val = c.get("avega_subsidiary")
         company_name = gc.get_company_label(subsidiary_val) if subsidiary_val is not None else "—"
+        # Set up for cvsp execution
+        FIELD_VALUE = c['avega_name']
+        TOP_FOLDER = company_name
+        # Call run_ingestion instead of main
+        # cvsp.run_ingestion(FIELD_VALUE=FIELD_VALUE, TOP_FOLDER=TOP_FOLDER)
+        
+        # Printout for test
         print(f"ID:        {c['avega_avegaconsultantid']}")
-        print(f"Name:      {c['avega_name']}")
+        print(f"Name:      {FIELD_VALUE}")
         print(f"Email:     {c.get('emailaddress', '—')}")
         print(f"Subsidiary: {subsidiary_val} ({company_name})")
         print(f"Matchbox:  {c.get('cr6be_matchbox')}")
-        print("-" * 30)
+        print(f"Would call cvsp.run_ingestion(FIELD_VALUE={FIELD_VALUE}, TOP_FOLDER={TOP_FOLDER})")
+        # print("-" * 30)
 
 if __name__ == "__main__":
     get_employees()
