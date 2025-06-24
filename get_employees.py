@@ -115,15 +115,15 @@ def get_employees():
         FIELD_VALUE = c['avega_name']
         TOP_FOLDER = company_name
         # Call run_ingestion instead of main
-        # cvsp.run_ingestion(FIELD_VALUE=FIELD_VALUE, TOP_FOLDER=TOP_FOLDER)
+        cvsp.run_ingestion(FIELD_VALUE=FIELD_VALUE, TOP_FOLDER=TOP_FOLDER)
         
         # Printout for test
-        print(f"ID:        {c['avega_avegaconsultantid']}")
-        print(f"Name:      {FIELD_VALUE}")
-        print(f"Email:     {c.get('emailaddress', '—')}")
-        print(f"Subsidiary: {subsidiary_val} ({company_name})")
-        print(f"Matchbox:  {c.get('cr6be_matchbox')}")
-        print(f"Would call cvsp.run_ingestion(FIELD_VALUE={FIELD_VALUE}, TOP_FOLDER={TOP_FOLDER})")
+        # print(f"ID:        {c['avega_avegaconsultantid']}")
+        # print(f"Name:      {FIELD_VALUE}")
+        # print(f"Email:     {c.get('emailaddress', '—')}")
+        # print(f"Subsidiary: {subsidiary_val} ({company_name})")
+        # print(f"Matchbox:  {c.get('cr6be_matchbox')}")
+        # print(f"Would call cvsp.run_ingestion(FIELD_VALUE={FIELD_VALUE}, TOP_FOLDER={TOP_FOLDER})")
         # print("-" * 30)
 
 if __name__ == "__main__":
