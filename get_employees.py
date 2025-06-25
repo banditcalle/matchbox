@@ -53,14 +53,14 @@ except HTTPError:
     raise
 
 # --- 3. Process results (both fields are ints) ---
-data = resp.json().get("value", [])
-for c in data:
-    print("ID:        ", c["avega_avegaconsultantid"])
-    print("Name:      ", c["avega_name"])
-    print("Email:     ", c.get("emailaddress", "—"))
-    print("Subsidiary:", c.get("avega_subsidiary"))   # integer
-    print("Matchbox:  ", c.get("cr6be_matchbox"))    # integer
-    print("-" * 30)
+# data = resp.json().get("value", [])
+# for c in data:
+#     print("ID:        ", c["avega_avegaconsultantid"])
+#     print("Name:      ", c["avega_name"])
+#     print("Email:     ", c.get("emailaddress", "—"))
+#     print("Subsidiary:", c.get("avega_subsidiary"))   # integer
+#     print("Matchbox:  ", c.get("cr6be_matchbox"))    # integer
+#     print("-" * 30)
 
 def get_employees():
     """
@@ -114,17 +114,20 @@ def get_employees():
         # Set up for cvsp execution
         FIELD_VALUE = c['avega_name']
         TOP_FOLDER = company_name
+        # Skip execution if company_name is None or empty/invalid
+        if not company_name or company_name == "—":
+            continue
         # Call run_ingestion instead of main
         cvsp.run_ingestion(FIELD_VALUE=FIELD_VALUE, TOP_FOLDER=TOP_FOLDER)
         
         # Printout for test
-        # print(f"ID:        {c['avega_avegaconsultantid']}")
-        # print(f"Name:      {FIELD_VALUE}")
-        # print(f"Email:     {c.get('emailaddress', '—')}")
-        # print(f"Subsidiary: {subsidiary_val} ({company_name})")
-        # print(f"Matchbox:  {c.get('cr6be_matchbox')}")
-        # print(f"Would call cvsp.run_ingestion(FIELD_VALUE={FIELD_VALUE}, TOP_FOLDER={TOP_FOLDER})")
-        # print("-" * 30)
+        print(f"ID:        {c['avega_avegaconsultantid']}")
+        print(f"Name:      {FIELD_VALUE}")
+        print(f"Email:     {c.get('emailaddress', '—')}")
+        print(f"Subsidiary: {subsidiary_val} ({company_name})")
+        print(f"Matchbox:  {c.get('cr6be_matchbox')}")
+        print(f"Would call cvsp.run_ingestion(FIELD_VALUE={FIELD_VALUE}, TOP_FOLDER={TOP_FOLDER})")
+        print("-" * 30)
 
 if __name__ == "__main__":
     get_employees()
