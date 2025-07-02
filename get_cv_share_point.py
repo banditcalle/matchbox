@@ -176,8 +176,13 @@ def extract_docx_text(file_bytes: bytes) -> str:
         # Join only non‐empty paragraphs
         return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
     except Exception as e:
+        # Check for BadZipFile or similar errors and log a more helpful message
+        import zipfile
+        if isinstance(e, zipfile.BadZipFile):
+            logger.error("File is not a valid .docx (zip) file. Skipping this file.")
+            return ""  # Return empty string to skip further processing
         logger.exception("Error extracting text from DOCX.")
-        raise
+        return ""  # Return empty string to skip further processing
 
 
 # ─── Chunk, embed, and upsert to Chroma ──────────────────────────────────────────
@@ -337,6 +342,8 @@ def run_ingestion(FIELD_VALUE, TOP_FOLDER):
                 try:
                     collection.upsert(ids=ids, documents=chunks, metadatas=metadatas, embeddings=embeddings)
                     logger.info(f"    • Upserted {len(chunks)} chunks for '{fname}'")
+                    # Log the FIELD_VALUE (person's name) if successfully loaded
+                    logger.info(f"Successfully loaded to ChromaDB: {FIELD_VALUE}")
                 except Exception as e:
                     logger.error(f"    • Error upserting '{fname}': {e}")
                     continue
