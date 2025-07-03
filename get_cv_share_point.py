@@ -11,7 +11,7 @@ from typing import List, Dict, Any, Optional
 from dotenv import load_dotenv
 import logging
 
-# --- Logging setup ---
+# --- Logging setup 1---
 LOG_FILE = os.path.join("logs", "get_cv_sharepoint.log")
 ERROR_LOG_FILE = os.path.join("logs", "get_cv_share_point_errors.log")
 
