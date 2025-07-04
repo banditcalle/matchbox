@@ -6,3 +6,4 @@ ingest_manifest.jsontalentbridge.log
 talentbridge_errors.log
 logs/
 *.log
+ingest_manifest.json
