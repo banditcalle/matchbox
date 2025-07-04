@@ -154,9 +154,19 @@ def traverse_folder(token: str, drive_id: str, parent_id: str) -> List[Dict[str,
 def get_drive_item(token: str, drive_id: str, item_id: str) -> Dict[str, Any]:
     try:
         url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}"
-        r = requests.get(url, headers={"Authorization": f"Bearer {token}"})
-        r.raise_for_status()
-        return r.json()
+        try:
+            r = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=30)
+            r.raise_for_status()
+            return r.json()
+        except requests.exceptions.Timeout as e:
+            logger.error(f"Timeout when getting drive item {item_id}: {e}")
+            raise
+        except requests.exceptions.ReadTimeout as e:
+            logger.error(f"ReadTimeout when getting drive item {item_id}: {e}")
+            raise
+        except requests.exceptions.RequestException as e:
+            logger.error(f"RequestException when getting drive item {item_id}: {e}")
+            raise
     except Exception as e:
         logger.exception("Error getting drive item.")
         raise
@@ -240,7 +250,12 @@ def run_ingestion(FIELD_VALUE, TOP_FOLDER):
             manifest = {}
 
         new_manifest: Dict[str, Dict[str, Any]] = {}
+        # Build all_current_ids from the manifest (all known chunk IDs)
         all_current_ids = set()
+        for file_id, info in manifest.items():
+            chunk_count = info.get("chunk_count", 0) or 0
+            for i in range(chunk_count):
+                all_current_ids.add(f"{file_id}_{i}")
         total_upserted = 0
 
         # 2) Authenticate & find site/drive
