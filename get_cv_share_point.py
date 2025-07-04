@@ -393,8 +393,11 @@ def run_ingestion(FIELD_VALUE, TOP_FOLDER):
             logger.warning(f"Could not fetch collection size after cleanup: {e}")
 
         # 9) Persist the new manifest
+        # Merge new_manifest with the old manifest to keep all previous entries unless replaced
+        merged_manifest = manifest.copy()
+        merged_manifest.update(new_manifest)
         with open(MANIFEST_PATH, "w") as f:
-            json.dump(new_manifest, f, indent=2)
+            json.dump(merged_manifest, f, indent=2)
         logger.info("Manifest written. Next run will skip unchanged files.")
 
         # 10) Cleanly shut down Chroma’s background threads:
