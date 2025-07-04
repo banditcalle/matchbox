@@ -92,7 +92,7 @@ def get_employees():
     url = f"{CRM_URL}/api/data/{API_VER}/avega_avegaconsultants"
     params = {
         "$select": "avega_avegaconsultantid,avega_name,emailaddress,avega_subsidiary,cr6be_matchbox",
-        "$filter": "cr6be_matchbox eq 966730000"
+        "$filter": "cr6be_matchbox eq 966730000 and statecode eq 0" # and statecode eq 0 (bara aktiva konsulter)
     }
 
     try:
