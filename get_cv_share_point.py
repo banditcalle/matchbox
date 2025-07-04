@@ -43,6 +43,9 @@ LIBRARY_NAME    = os.getenv("LIBRARY_NAME")
 TOP_FOLDER      = os.getenv("TOP_FOLDER")
 FIELD_VALUE     = os.getenv("FIELD_VALUE")
 
+# Optional: Only ingest one CV per FIELD_VALUE
+ONLY_ONE_CV_PER_FIELD_VALUE = os.getenv("ONLY_ONE_CV_PER_FIELD_VALUE", "0").lower() in ("1", "true", "yes")
+
 openai.api_key  = os.getenv("OPENAI_API_KEY")
 CHROMA_DIR      = os.getenv("CHROMA_DIR")
 MANIFEST_PATH   = os.getenv("MANIFEST_PATH")
@@ -256,6 +259,7 @@ def run_ingestion(FIELD_VALUE, TOP_FOLDER):
             logger.error(f"Top-level folder '{lookup_top_folder}' not found in library '{LIBRARY_NAME}'. Skipping this ingestion run.")
             return  # Skip this post if not found
 
+
         # 4) Filter second-level subfolders by FIELD_VALUE
         second_items = list_children(token, drive_id, parent_id=top["id"])
         matched_folders = [
@@ -266,6 +270,11 @@ def run_ingestion(FIELD_VALUE, TOP_FOLDER):
         if not matched_folders:
             logger.warning(f"No subfolders under '{TOP_FOLDER}' matched '*{FIELD_VALUE}*'. Exiting.")
             return
+
+        # If ONLY_ONE_CV_PER_FIELD_VALUE is set, only process the first matching folder
+        if ONLY_ONE_CV_PER_FIELD_VALUE and matched_folders:
+            logger.info("ONLY_ONE_CV_PER_FIELD_VALUE is set: only the first matching folder will be processed.")
+            matched_folders = matched_folders[:1]
 
         # 5) Initialize Chroma and check initial count
         client     = init_vector_store()
@@ -279,6 +288,7 @@ def run_ingestion(FIELD_VALUE, TOP_FOLDER):
             initial_ids = []
 
         # 6) Loop over matched folders and ingest
+
         for folder in matched_folders:
             logger.info(f"→ Processing folder: {folder['name']}")
             files_in_folder = traverse_folder(token, drive_id, folder["id"])
@@ -286,7 +296,16 @@ def run_ingestion(FIELD_VALUE, TOP_FOLDER):
                 logger.info("  (No files found in this folder.)")
                 continue
 
-            for f in files_in_folder:
+            # If ONLY_ONE_CV_PER_FIELD_VALUE is set, only process the first .docx file in the folder
+            files_to_process = files_in_folder
+            if ONLY_ONE_CV_PER_FIELD_VALUE:
+                docx_files = [f for f in files_in_folder if f["name"].lower().endswith(".docx")]
+                if docx_files:
+                    files_to_process = [docx_files[0]]
+                else:
+                    files_to_process = []
+
+            for f in files_to_process:
                 fname = f["name"]
                 if not fname.lower().endswith(".docx"):
                     logger.info(f"  Skipping non-docx file: {fname}")
