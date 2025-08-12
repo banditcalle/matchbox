@@ -46,6 +46,9 @@ FIELD_VALUE     = os.getenv("FIELD_VALUE")
 # Optional: Only ingest one CV per FIELD_VALUE
 ONLY_ONE_CV_PER_FIELD_VALUE = os.getenv("ONLY_ONE_CV_PER_FIELD_VALUE", "0").lower() in ("1", "true", "yes")
 
+# CHANGES: Gate cleanup by env; default off to preserve historical versions
+ENABLE_CLEANUP = os.getenv("ENABLE_CLEANUP", "0").lower() in ("1", "true", "yes")
+
 openai.api_key  = os.getenv("OPENAI_API_KEY")
 CHROMA_DIR      = os.getenv("CHROMA_DIR")
 MANIFEST_PATH   = os.getenv("MANIFEST_PATH")
@@ -252,11 +255,19 @@ def run_ingestion(FIELD_VALUE, TOP_FOLDER):
         new_manifest: Dict[str, Dict[str, Any]] = {}
         # Build all_current_ids from the manifest (all known chunk IDs)
         all_current_ids = set()
+
+        # CHANGES: reconstruct IDs using last_modified to match the new ID scheme
         for file_id, info in manifest.items():
             chunk_count = info.get("chunk_count", 0) or 0
-            for i in range(chunk_count):
-                all_current_ids.add(f"{file_id}_{i}")
+            lm_prev = info.get("last_modified")
+            if lm_prev:
+                for i in range(chunk_count):
+                    all_current_ids.add(f"{file_id}::{lm_prev}::{i}")
+
         total_upserted = 0
+
+        # Track fileIds seen this run for safe cleanup
+        current_base_file_ids = set()
 
         # 2) Authenticate & find site/drive
         token    = get_access_token()
@@ -330,6 +341,7 @@ def run_ingestion(FIELD_VALUE, TOP_FOLDER):
                 item = get_drive_item(token, drive_id, f["id"])
                 lm   = item["lastModifiedDateTime"]
                 new_manifest[f["id"]] = {"last_modified": lm}
+                current_base_file_ids.add(f["id"])  # track seen file ids for cleanup
 
                 # 6b) Check manifest: skip if unchanged
                 old = manifest.get(f["id"], {})
@@ -337,10 +349,11 @@ def run_ingestion(FIELD_VALUE, TOP_FOLDER):
                     chunk_count = old.get("chunk_count", 0) or 0
                     if chunk_count:
                         logger.info(f"  → '{f['name']}' unchanged. Reserving {chunk_count} old chunk IDs.")
+                        # CHANGES: reserve exact IDs for the unchanged version
+                        for i in range(chunk_count):
+                            all_current_ids.add(f"{f['id']}::{lm}::{i}")
                     else:
                         logger.info(f"  → '{f['name']}' unchanged, but old chunk_count was None/0, so no IDs reserved.")
-                    for i in range(chunk_count):
-                        all_current_ids.add(f"{f['id']}_{i}")
                     continue
 
                 # 6c) (Re)ingest this file because it’s new or modified
@@ -360,7 +373,8 @@ def run_ingestion(FIELD_VALUE, TOP_FOLDER):
                     new_manifest[f["id"]]["chunk_count"] = 0
                     continue
 
-                ids = [f"{f['id']}_{i}" for i in range(len(chunks))]
+                # CHANGES: version-aware IDs → new version appends, same version overwrites
+                ids = [f"{f['id']}::{lm}::{i}" for i in range(len(chunks))]
                 all_current_ids.update(ids)
                 new_manifest[f["id"]]["chunk_count"] = len(chunks)
 
@@ -376,7 +390,7 @@ def run_ingestion(FIELD_VALUE, TOP_FOLDER):
                     for i in range(len(chunks))
                 ]
 
-                # 6d) Upsert into Chroma
+                # 6d) Upsert into Chroma (idempotent for same version)
                 try:
                     collection.upsert(ids=ids, documents=chunks, metadatas=metadatas, embeddings=embeddings)
                     logger.info(f"    • Upserted {len(chunks)} chunks for '{fname}'")
@@ -399,32 +413,48 @@ def run_ingestion(FIELD_VALUE, TOP_FOLDER):
         # 7) Report how many were upserted
         logger.info(f"Total new chunks ingested this run: {total_upserted}")
 
-        # 8) Cleanup: delete any vectors whose IDs aren’t in this run
+        # 8) Cleanup: delete any vectors whose files are no longer present (opt-in)
         logger.info("—— Cleanup Phase —————————————————————————————————————————")
-        try:
-            before_resp = collection.get(include=["documents", "metadatas", "embeddings"])
-            before_ids  = before_resp["ids"]
-            logger.info(f"Existing IDs before cleanup: {len(before_ids)}")
-        except Exception as e:
-            logger.warning(f"Could not fetch existing IDs before cleanup: {e}")
-            before_ids = []
-
-        to_delete = [vid for vid in before_ids if vid not in all_current_ids]
-        if to_delete:
-            logger.info(f"  • Deleting {len(to_delete)} stale chunk IDs...")
-            try:
-                collection.delete(ids=to_delete)
-            except Exception as e:
-                logger.error(f"  • Error deleting stale IDs: {e}")
+        if not ENABLE_CLEANUP:
+            logger.info("Cleanup disabled (ENABLE_CLEANUP=0). Skipping deletion of any existing vectors.")
         else:
-            logger.info("  • No stale IDs to delete.")
+            try:
+                before_resp = collection.get(include=["metadatas"])
+                before_ids  = before_resp["ids"]
+                logger.info(f"Existing IDs before cleanup: {len(before_ids)}")
 
-        try:
-            after_resp = collection.get(include=["documents", "metadatas", "embeddings"])
-            after_ids  = after_resp["ids"]
-            logger.info(f"Collection size after cleanup: {len(after_ids)}")
-        except Exception as e:
-            logger.warning(f"Could not fetch collection size after cleanup: {e}")
+                def base_of(vid: str) -> str:
+                    # our new scheme: fileId::{lm}::{i}
+                    if "::" in vid:
+                        return vid.split("::", 1)[0]
+                    # fallback: old scheme compatibility (best effort)
+                    return vid.split("_", 1)[0]
+
+                to_delete = []
+                for vid in before_ids:
+                    base = base_of(vid)
+                    # delete only if the underlying file is no longer present this run
+                    # (i.e., removed from SharePoint). This preserves old versions.
+                    if base not in current_base_file_ids:
+                        to_delete.append(vid)
+
+                if to_delete:
+                    logger.info(f"  • Deleting {len(to_delete)} stale chunk IDs for files no longer present...")
+                    try:
+                        collection.delete(ids=to_delete)
+                    except Exception as e:
+                        logger.error(f"  • Error deleting stale IDs: {e}")
+                else:
+                    logger.info("  • No stale IDs to delete.")
+            except Exception as e:
+                logger.warning(f"Cleanup skipped due to error reading collection: {e}")
+
+            try:
+                after_resp = collection.get()
+                after_ids  = after_resp["ids"]
+                logger.info(f"Collection size after cleanup: {len(after_ids)}")
+            except Exception as e:
+                logger.warning(f"Could not fetch collection size after cleanup: {e}")
 
         # 9) Persist the new manifest
         # Merge new_manifest with the old manifest to keep all previous entries unless replaced
