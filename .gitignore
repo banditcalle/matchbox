@@ -7,3 +7,4 @@ talentbridge_errors.log
 logs/
 *.log
 ingest_manifest.json
+skills_certifications_report.json
