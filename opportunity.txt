@@ -1,0 +1,19 @@
+Ny affärsmöjlighet
+ 
+Topic:	Data Analytics consultant
+Account:	Telia Sverige AB
+Location:	Stockholm
+Remote %:	25 %
+Est. Close date:	2026-04-08 00:00
+Description:	Job Description and Requirements:
+Specialized Planhat / Customer Success Operations role The assignment requires hands on experience in: 
+ Planhat data models, filters and pages 
+ Dashboard design (CX / CS / Business Reviews / Health Scores) 
+ Integrations via API / webhooks / JSON 
+ Acting as a platform specialist / administrator rather than an advisor 
+
+Please also note, that the delivery setup allows remote or hybrid delivery.
+
+NOTE: We would also like to specify, that the Planhat competence could be trained on the job, so the highest focus would be for the data analytics business analytics skills.
+ 
+ För att läsa mer om affärsmöjligheten, klicka på länken Regarding eller på 

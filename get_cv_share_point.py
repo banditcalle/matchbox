@@ -1,485 +1,438 @@
-import os
 import json
-import requests
-from io import BytesIO
-from docx import Document
-from msal import ConfidentialClientApplication
-import fnmatch
-import openai
-from chromadb import PersistentClient
-from typing import List, Dict, Any, Optional
-from dotenv import load_dotenv
 import logging
+import os
+from io import BytesIO
+from typing import Any, Dict, List, Optional
 
-# --- Logging setup 1---
-LOG_FILE = os.path.join("logs", "get_cv_sharepoint.log")
-ERROR_LOG_FILE = os.path.join("logs", "get_cv_share_point_errors.log")
+import fnmatch
+import requests
+from chromadb import PersistentClient
+from docx import Document
+from dotenv import load_dotenv
+from msal import ConfidentialClientApplication
+from openai import OpenAI
 
-os.makedirs("logs", exist_ok=True)
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    handlers=[
-        logging.FileHandler(LOG_FILE, mode="a", encoding="utf-8"),
-        logging.StreamHandler()
-    ]
-)
-error_handler = logging.FileHandler(ERROR_LOG_FILE, mode="a", encoding="utf-8")
-error_handler.setLevel(logging.WARNING)
-error_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
-logging.getLogger().addHandler(error_handler)
-logger = logging.getLogger(__name__)
 
-# ─── Load environment variables ──────────────────────────────────────────────────
 load_dotenv()
 
-TENANT_ID       = os.getenv("TENANT_ID")
-CLIENT_ID       = os.getenv("CLIENT_ID")
-CLIENT_SECRET   = os.getenv("CLIENT_SECRET")
+LOG_FILE = os.getenv("LOG_FILE", os.path.join("logs", "get_cv_sharepoint.log"))
+ERROR_LOG_FILE = os.getenv("ERROR_LOG_FILE", os.path.join("logs", "get_cv_share_point_errors.log"))
 
-HOSTNAME        = os.getenv("HOSTNAME")
-SITE_PATH       = os.getenv("SITE_PATH")
-LIBRARY_NAME    = os.getenv("LIBRARY_NAME")
-TOP_FOLDER      = os.getenv("TOP_FOLDER")
-FIELD_VALUE     = os.getenv("FIELD_VALUE")
 
-# Optional: Only ingest one CV per FIELD_VALUE
+def configure_logging() -> logging.Logger:
+    os.makedirs("logs", exist_ok=True)
+    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    root_logger.handlers.clear()
+
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(formatter)
+    root_logger.addHandler(stream_handler)
+
+    try:
+        file_handler = logging.FileHandler(LOG_FILE, mode="a", encoding="utf-8")
+        file_handler.setFormatter(formatter)
+        root_logger.addHandler(file_handler)
+    except OSError as e:
+        root_logger.warning(f"Could not open log file '{LOG_FILE}': {e}. Continuing with console logging only.")
+
+    try:
+        error_handler = logging.FileHandler(ERROR_LOG_FILE, mode="a", encoding="utf-8")
+        error_handler.setLevel(logging.WARNING)
+        error_handler.setFormatter(formatter)
+        root_logger.addHandler(error_handler)
+    except OSError as e:
+        root_logger.warning(f"Could not open error log file '{ERROR_LOG_FILE}': {e}.")
+
+    return logging.getLogger(__name__)
+
+
+logger = configure_logging()
+
+TENANT_ID = os.getenv("TENANT_ID")
+CLIENT_ID = os.getenv("CLIENT_ID")
+CLIENT_SECRET = os.getenv("CLIENT_SECRET")
+
+HOSTNAME = os.getenv("HOSTNAME")
+SITE_PATH = os.getenv("SITE_PATH")
+LIBRARY_NAME = os.getenv("LIBRARY_NAME")
+TOP_FOLDER = os.getenv("TOP_FOLDER")
+FIELD_VALUE = os.getenv("FIELD_VALUE")
+
 ONLY_ONE_CV_PER_FIELD_VALUE = os.getenv("ONLY_ONE_CV_PER_FIELD_VALUE", "0").lower() in ("1", "true", "yes")
-
-# CHANGES: Gate cleanup by env; default off to preserve historical versions
+INGEST_ALL_DOCX = os.getenv("INGEST_ALL_DOCX", "0").lower() in ("1", "true", "yes")
 ENABLE_CLEANUP = os.getenv("ENABLE_CLEANUP", "0").lower() in ("1", "true", "yes")
 
-openai.api_key  = os.getenv("OPENAI_API_KEY")
-CHROMA_DIR      = os.getenv("CHROMA_DIR")
-MANIFEST_PATH   = os.getenv("MANIFEST_PATH")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+CHROMA_DIR = os.getenv("CHROMA_DIR")
+MANIFEST_PATH = os.getenv("MANIFEST_PATH")
 COLLECTION_NAME = os.getenv("COLLECTION_NAME")
-# ──────────────────────────────────────────────────────────────────────────────────
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-ada-002")
 
-# Safety checks
-try:
-    if not all([TENANT_ID, CLIENT_ID, CLIENT_SECRET, HOSTNAME, SITE_PATH,
-                LIBRARY_NAME, TOP_FOLDER, FIELD_VALUE, openai.api_key,
-                CHROMA_DIR, MANIFEST_PATH, COLLECTION_NAME]):
-        missing = [k for k,v in {
-            "TENANT_ID":TENANT_ID, "CLIENT_ID":CLIENT_ID, "CLIENT_SECRET":CLIENT_SECRET,
-            "HOSTNAME":HOSTNAME, "SITE_PATH":SITE_PATH, "LIBRARY_NAME":LIBRARY_NAME,
-            "TOP_FOLDER":TOP_FOLDER, "FIELD_VALUE":FIELD_VALUE,
-            "OPENAI_API_KEY":openai.api_key,
-            "CHROMA_DIR":CHROMA_DIR, "MANIFEST_PATH":MANIFEST_PATH,
-            "COLLECTION_NAME":COLLECTION_NAME
-        }.items() if not v]
+
+def validate_environment() -> None:
+    required = {
+        "TENANT_ID": TENANT_ID,
+        "CLIENT_ID": CLIENT_ID,
+        "CLIENT_SECRET": CLIENT_SECRET,
+        "HOSTNAME": HOSTNAME,
+        "SITE_PATH": SITE_PATH,
+        "LIBRARY_NAME": LIBRARY_NAME,
+        "OPENAI_API_KEY": OPENAI_API_KEY,
+        "CHROMA_DIR": CHROMA_DIR,
+        "MANIFEST_PATH": MANIFEST_PATH,
+        "COLLECTION_NAME": COLLECTION_NAME,
+    }
+    missing = [key for key, value in required.items() if not value]
+    if missing:
         logger.error(f"Missing environment variables: {missing}")
         raise RuntimeError(f"Missing environment variables: {missing}")
-except Exception as e:
-    logger.exception("Error during environment variable safety checks.")
-    raise
+
+    if not INGEST_ALL_DOCX:
+        targeted_required = {"TOP_FOLDER": TOP_FOLDER, "FIELD_VALUE": FIELD_VALUE}
+        targeted_missing = [key for key, value in targeted_required.items() if not value]
+        if targeted_missing:
+            logger.error(f"Missing environment variables for targeted ingestion: {targeted_missing}")
+            raise RuntimeError(f"Missing environment variables for targeted ingestion: {targeted_missing}")
+
+
+validate_environment()
 
 logger.info(f"Using CHROMA_DIR = '{CHROMA_DIR}'")
 logger.info(f"Using COLLECTION_NAME = '{COLLECTION_NAME}'")
-logger.info(f"Using MANIFEST_PATH = '{MANIFEST_PATH}'\n")
+logger.info(f"Using MANIFEST_PATH = '{MANIFEST_PATH}'")
+logger.info(f"INGEST_ALL_DOCX = {INGEST_ALL_DOCX}")
+
+openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
 
-# ─── Graph auth & helper functions ───────────────────────────────────────────────
 def get_access_token() -> str:
-    try:
-        app = ConfidentialClientApplication(
-            client_id=CLIENT_ID,
-            client_credential=CLIENT_SECRET,
-            authority=f"https://login.microsoftonline.com/{TENANT_ID}"
-        )
-        token = app.acquire_token_for_client(scopes=["https://graph.microsoft.com/.default"])
-        if "access_token" not in token:
-            logger.error(f"Failed to obtain access token: {token}")
-            raise RuntimeError(f"Failed to obtain access token: {token}")
-        return token["access_token"]
-    except Exception as e:
-        logger.exception("Error obtaining access token.")
-        raise
+    app = ConfidentialClientApplication(
+        client_id=CLIENT_ID,
+        client_credential=CLIENT_SECRET,
+        authority=f"https://login.microsoftonline.com/{TENANT_ID}",
+    )
+    token = app.acquire_token_for_client(scopes=["https://graph.microsoft.com/.default"])
+    if "access_token" not in token:
+        logger.error(f"Failed to obtain access token: {token}")
+        raise RuntimeError(f"Failed to obtain access token: {token}")
+    return token["access_token"]
+
 
 def get_site_id(token: str) -> str:
-    try:
-        url = f"https://graph.microsoft.com/v1.0/sites/{HOSTNAME}:{SITE_PATH}"
-        r = requests.get(url, headers={"Authorization": f"Bearer {token}"})
-        r.raise_for_status()
-        return r.json()["id"]
-    except Exception as e:
-        logger.exception("Error getting site ID.")
-        raise
+    url = f"https://graph.microsoft.com/v1.0/sites/{HOSTNAME}:{SITE_PATH}"
+    response = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=30)
+    response.raise_for_status()
+    return response.json()["id"]
+
 
 def get_drive_id(token: str, site_id: str) -> str:
-    try:
-        url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/drives"
-        r = requests.get(url, headers={"Authorization": f"Bearer {token}"})
-        r.raise_for_status()
-        for d in r.json().get("value", []):
-            if d["name"] == LIBRARY_NAME:
-                return d["id"]
-        logger.error(f"Drive '{LIBRARY_NAME}' not found.")
-        raise RuntimeError(f"Drive '{LIBRARY_NAME}' not found.")
-    except Exception as e:
-        logger.exception("Error getting drive ID.")
-        raise
+    url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/drives"
+    response = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=30)
+    response.raise_for_status()
+    for drive in response.json().get("value", []):
+        if drive["name"] == LIBRARY_NAME:
+            return drive["id"]
+    raise RuntimeError(f"Drive '{LIBRARY_NAME}' not found.")
+
 
 def list_children(token: str, drive_id: str, parent_id: Optional[str] = None) -> List[Dict[str, Any]]:
-    try:
-        if parent_id:
-            url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{parent_id}/children"
-        else:
-            url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root/children"
-        items = []
-        r = requests.get(url, headers={"Authorization": f"Bearer {token}"})
-        r.raise_for_status()
-        data = r.json()
+    if parent_id:
+        url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{parent_id}/children"
+    else:
+        url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root/children"
+
+    items: List[Dict[str, Any]] = []
+    headers = {"Authorization": f"Bearer {token}"}
+    response = requests.get(url, headers=headers, timeout=30)
+    response.raise_for_status()
+    data = response.json()
+    items.extend(data.get("value", []))
+
+    while "@odata.nextLink" in data:
+        response = requests.get(data["@odata.nextLink"], headers=headers, timeout=30)
+        response.raise_for_status()
+        data = response.json()
         items.extend(data.get("value", []))
-        while "@odata.nextLink" in data:
-            r = requests.get(data["@odata.nextLink"], headers={"Authorization": f"Bearer {token}"})
-            r.raise_for_status()
-            data = r.json()
-            items.extend(data.get("value", []))
-        return items
-    except Exception as e:
-        logger.exception("Error listing children.")
-        raise
+
+    return items
+
 
 def traverse_folder(token: str, drive_id: str, parent_id: str) -> List[Dict[str, Any]]:
-    try:
-        found = []
-        for item in list_children(token, drive_id, parent_id):
-            if "folder" in item:
-                found.extend(traverse_folder(token, drive_id, item["id"]))
-            elif "file" in item:
-                found.append(item)
-        return found
-    except Exception as e:
-        logger.exception("Error traversing folder.")
-        raise
+    found: List[Dict[str, Any]] = []
+    for item in list_children(token, drive_id, parent_id):
+        if "folder" in item:
+            found.extend(traverse_folder(token, drive_id, item["id"]))
+        elif "file" in item:
+            found.append(item)
+    return found
+
 
 def get_drive_item(token: str, drive_id: str, item_id: str) -> Dict[str, Any]:
-    try:
-        url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}"
-        try:
-            r = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=30)
-            r.raise_for_status()
-            return r.json()
-        except requests.exceptions.Timeout as e:
-            logger.error(f"Timeout when getting drive item {item_id}: {e}")
-            raise
-        except requests.exceptions.ReadTimeout as e:
-            logger.error(f"ReadTimeout when getting drive item {item_id}: {e}")
-            raise
-        except requests.exceptions.RequestException as e:
-            logger.error(f"RequestException when getting drive item {item_id}: {e}")
-            raise
-    except Exception as e:
-        logger.exception("Error getting drive item.")
-        raise
+    url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}"
+    response = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=30)
+    response.raise_for_status()
+    return response.json()
 
 
-# ─── Download & extract Word content ─────────────────────────────────────────────
 def download_file(token: str, drive_id: str, item_id: str) -> bytes:
-    try:
-        url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/content"
-        r = requests.get(url, headers={"Authorization": f"Bearer {token}"})
-        r.raise_for_status()
-        return r.content
-    except Exception as e:
-        logger.exception(f"Error downloading file {item_id}.")
-        raise
+    url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/content"
+    response = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=60)
+    response.raise_for_status()
+    return response.content
+
 
 def extract_docx_text(file_bytes: bytes) -> str:
     try:
         doc = Document(BytesIO(file_bytes))
-        # Join only non‐empty paragraphs
-        return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+        return "\n".join(paragraph.text for paragraph in doc.paragraphs if paragraph.text.strip())
     except Exception as e:
-        # Check for BadZipFile or similar errors and log a more helpful message
         import zipfile
+
         if isinstance(e, zipfile.BadZipFile):
             logger.error("File is not a valid .docx (zip) file. Skipping this file.")
-            return ""  # Return empty string to skip further processing
+            return ""
         logger.exception("Error extracting text from DOCX.")
-        return ""  # Return empty string to skip further processing
+        return ""
 
 
-# ─── Chunk, embed, and upsert to Chroma ──────────────────────────────────────────
 def chunk_text(text: str, max_tokens: int = 500, overlap: int = 50) -> List[str]:
-    try:
-        words = text.split()
-        chunks, start = [], 0
-        while start < len(words):
-            end = start + max_tokens
-            chunks.append(" ".join(words[start:end]))
-            start = max(end - overlap, end)
-        return chunks
-    except Exception as e:
-        logger.exception("Error chunking text.")
-        raise
+    words = text.split()
+    chunks: List[str] = []
+    start = 0
+    while start < len(words):
+        end = start + max_tokens
+        chunks.append(" ".join(words[start:end]))
+        start = max(end - overlap, end)
+    return chunks
 
-def embed_batches(texts: List[str], model: str = "text-embedding-ada-002") -> List[List[float]]:
-    try:
-        if not texts:
-            return []
-        resp = openai.Embedding.create(input=texts, model=model)
-        return [d.embedding for d in resp["data"]]
-    except Exception as e:
-        logger.exception("Error embedding batches.")
-        raise
+
+def embed_batches(texts: List[str], model: str = EMBEDDING_MODEL) -> List[List[float]]:
+    if not texts:
+        return []
+    response = openai_client.embeddings.create(input=texts, model=model)
+    return [item.embedding for item in response.data]
+
 
 def init_vector_store() -> PersistentClient:
-    try:
-        # Make sure CHROMA_DIR exists (create folder if needed)
-        os.makedirs(CHROMA_DIR, exist_ok=True)
-        client = PersistentClient(path=CHROMA_DIR)
-        _ = client.get_or_create_collection(name=COLLECTION_NAME, metadata={"source": "sharepoint"})
-        return client
-    except Exception as e:
-        logger.exception("Error initializing vector store.")
-        raise
+    os.makedirs(CHROMA_DIR, exist_ok=True)
+    client = PersistentClient(path=CHROMA_DIR)
+    client.get_or_create_collection(name=COLLECTION_NAME, metadata={"source": "sharepoint"})
+    return client
 
 
-# ─── Main ingestion flow with manifest & cleanup ─────────────────────────────────
-def run_ingestion(FIELD_VALUE, TOP_FOLDER):
+def load_manifest() -> Dict[str, Dict[str, Any]]:
+    if not os.path.exists(MANIFEST_PATH):
+        logger.info(f"Manifest file '{MANIFEST_PATH}' not found. A new one will be created.")
+        return {}
+
+    logger.info(f"Manifest file '{MANIFEST_PATH}' already exists. Loading contents.")
+    with open(MANIFEST_PATH, "r", encoding="utf-8") as file_handle:
+        manifest = json.load(file_handle)
+    logger.warning("Because the manifest exists, unchanged files will be skipped. Delete the manifest to force a full reingestion.")
+    return manifest
+
+
+def write_manifest(manifest: Dict[str, Dict[str, Any]]) -> None:
+    with open(MANIFEST_PATH, "w", encoding="utf-8") as file_handle:
+        json.dump(manifest, file_handle, indent=2)
+    logger.info("Manifest written. Next run will skip unchanged files.")
+
+
+def normalize_top_folder_name(folder_name: str) -> str:
+    return "Senso-Y" if folder_name == "Senso Y" else folder_name
+
+
+def get_target_folders(token: str, drive_id: str, top_folder_name: str, field_value: str) -> List[Dict[str, Any]]:
+    lookup_top_folder = normalize_top_folder_name(top_folder_name)
+    root_items = list_children(token, drive_id)
+    top = next((item for item in root_items if item["name"] == lookup_top_folder and "folder" in item), None)
+    if not top:
+        logger.error(f"Top-level folder '{lookup_top_folder}' not found in library '{LIBRARY_NAME}'.")
+        return []
+
+    second_level_items = list_children(token, drive_id, parent_id=top["id"])
+    matched_folders = [
+        item for item in second_level_items if "folder" in item and fnmatch.fnmatch(item["name"], f"*{field_value}*")
+    ]
+    if not matched_folders:
+        logger.warning(f"No subfolders under '{top_folder_name}' matched '*{field_value}*'.")
+        return []
+
+    if ONLY_ONE_CV_PER_FIELD_VALUE:
+        logger.info("ONLY_ONE_CV_PER_FIELD_VALUE is set: only the first matching folder will be processed.")
+        return matched_folders[:1]
+    return matched_folders
+
+
+def get_all_top_level_folders(token: str, drive_id: str) -> List[Dict[str, Any]]:
+    return [item for item in list_children(token, drive_id) if "folder" in item]
+
+
+def cleanup_deleted_files(collection: Any, current_base_file_ids: set[str]) -> None:
+    if not ENABLE_CLEANUP:
+        logger.info("Cleanup disabled (ENABLE_CLEANUP=0). Skipping deletion of any existing vectors.")
+        return
+
     try:
-        # 1) Load or initialize manifest
-        if os.path.exists(MANIFEST_PATH):
-            logger.info(f"Manifest file '{MANIFEST_PATH}' already exists. Loading contents:")
-            with open(MANIFEST_PATH, "r") as f:
-                manifest = json.load(f)
-            for vid, info in manifest.items():
-                logger.info(f"  • {vid} → last_modified = {info.get('last_modified')}, chunk_count = {info.get('chunk_count')}")
-            logger.warning("Because the manifest exists, every file found below will be skipped unless its timestamp differs. If this is your first run and you expected ingestion, delete the manifest file and re-run.")
+        before_response = collection.get(include=["metadatas"])
+        before_ids = before_response["ids"]
+        logger.info(f"Existing IDs before cleanup: {len(before_ids)}")
+
+        def base_of(vector_id: str) -> str:
+            if "::" in vector_id:
+                return vector_id.split("::", 1)[0]
+            return vector_id.split("_", 1)[0]
+
+        to_delete = [vector_id for vector_id in before_ids if base_of(vector_id) not in current_base_file_ids]
+        if to_delete:
+            logger.info(f"Deleting {len(to_delete)} stale chunk IDs for files no longer present.")
+            collection.delete(ids=to_delete)
         else:
-            logger.info(f"Manifest file '{MANIFEST_PATH}' not found. A new one will be created.")
-            manifest = {}
-
-        new_manifest: Dict[str, Dict[str, Any]] = {}
-        # Build all_current_ids from the manifest (all known chunk IDs)
-        all_current_ids = set()
-
-        # CHANGES: reconstruct IDs using last_modified to match the new ID scheme
-        for file_id, info in manifest.items():
-            chunk_count = info.get("chunk_count", 0) or 0
-            lm_prev = info.get("last_modified")
-            if lm_prev:
-                for i in range(chunk_count):
-                    all_current_ids.add(f"{file_id}::{lm_prev}::{i}")
-
-        total_upserted = 0
-
-        # Track fileIds seen this run for safe cleanup
-        current_base_file_ids = set()
-
-        # 2) Authenticate & find site/drive
-        token    = get_access_token()
-        site_id  = get_site_id(token)
-        drive_id = get_drive_id(token, site_id)
-
-        # 3) Find TOP_FOLDER under the library
-        # Replace 'Senso Y' with 'Senso-Y' for folder lookup
-        lookup_top_folder = TOP_FOLDER
-        if lookup_top_folder == "Senso Y":
-            lookup_top_folder = "Senso-Y"
-        root_items = list_children(token, drive_id)
-        top = next((i for i in root_items if i["name"] == lookup_top_folder and "folder" in i), None)
-        if not top:
-            logger.error(f"Top-level folder '{lookup_top_folder}' not found in library '{LIBRARY_NAME}'. Skipping this ingestion run.")
-            return  # Skip this post if not found
+            logger.info("No stale IDs to delete.")
+    except Exception as e:
+        logger.warning(f"Cleanup skipped due to error reading collection: {e}")
 
 
-        # 4) Filter second-level subfolders by FIELD_VALUE
-        second_items = list_children(token, drive_id, parent_id=top["id"])
-        matched_folders = [
-            f for f in second_items
-            if "folder" in f and fnmatch.fnmatch(f["name"], f"*{FIELD_VALUE}*")
-        ]
+def ingest_folders(
+    token: str,
+    drive_id: str,
+    folders: List[Dict[str, Any]],
+    manifest: Dict[str, Dict[str, Any]],
+    run_label: str,
+) -> None:
+    new_manifest: Dict[str, Dict[str, Any]] = {}
+    total_upserted = 0
+    current_base_file_ids: set[str] = set()
 
-        if not matched_folders:
-            logger.warning(f"No subfolders under '{TOP_FOLDER}' matched '*{FIELD_VALUE}*'. Exiting.")
-            return
+    client = init_vector_store()
+    collection = client.get_or_create_collection(name=COLLECTION_NAME)
 
-        # If ONLY_ONE_CV_PER_FIELD_VALUE is set, only process the first matching folder
-        if ONLY_ONE_CV_PER_FIELD_VALUE and matched_folders:
-            logger.info("ONLY_ONE_CV_PER_FIELD_VALUE is set: only the first matching folder will be processed.")
-            matched_folders = matched_folders[:1]
+    try:
+        logger.info(f"Chroma collection '{COLLECTION_NAME}' opened. Initial size: {collection.count()} chunks.")
+    except Exception as e:
+        logger.warning(f"Could not fetch initial collection size: {e}")
 
-        # 5) Initialize Chroma and check initial count
-        client     = init_vector_store()
-        collection = client.get_or_create_collection(name=COLLECTION_NAME)
-        try:
-            initial_resp = collection.get(include=["documents", "metadatas", "embeddings"])
-            initial_ids = initial_resp["ids"]
-            logger.info(f"Chroma collection '{COLLECTION_NAME}' opened. Initial size: {len(initial_ids)} chunks.")
-        except Exception as e:
-            logger.warning(f"Could not fetch initial collection size: {e}")
-            initial_ids = []
-
-        # 6) Loop over matched folders and ingest
-
-        for folder in matched_folders:
-            logger.info(f"→ Processing folder: {folder['name']}")
+    try:
+        for folder in folders:
+            logger.info(f"Processing folder: {folder['name']}")
             files_in_folder = traverse_folder(token, drive_id, folder["id"])
             if not files_in_folder:
-                logger.info("  (No files found in this folder.)")
+                logger.info("  No files found in this folder.")
                 continue
 
-            # If ONLY_ONE_CV_PER_FIELD_VALUE is set, only process the first .docx file in the folder
             files_to_process = files_in_folder
-            if ONLY_ONE_CV_PER_FIELD_VALUE:
-                docx_files = [f for f in files_in_folder if f["name"].lower().endswith(".docx")]
-                if docx_files:
-                    files_to_process = [docx_files[0]]
-                else:
-                    files_to_process = []
+            if ONLY_ONE_CV_PER_FIELD_VALUE and not INGEST_ALL_DOCX:
+                docx_files = [item for item in files_in_folder if item["name"].lower().endswith(".docx")]
+                files_to_process = [docx_files[0]] if docx_files else []
 
-            for f in files_to_process:
-                fname = f["name"]
-                if not fname.lower().endswith(".docx"):
-                    logger.info(f"  Skipping non-docx file: {fname}")
+            for file_item in files_to_process:
+                file_name = file_item["name"]
+                if not file_name.lower().endswith(".docx"):
+                    logger.info(f"  Skipping non-docx file: {file_name}")
                     continue
 
-                # 6a) Fetch the file’s metadata (including lastModifiedDateTime)
-                item = get_drive_item(token, drive_id, f["id"])
-                lm   = item["lastModifiedDateTime"]
-                new_manifest[f["id"]] = {"last_modified": lm}
-                current_base_file_ids.add(f["id"])  # track seen file ids for cleanup
+                item_metadata = get_drive_item(token, drive_id, file_item["id"])
+                last_modified = item_metadata["lastModifiedDateTime"]
+                new_manifest[file_item["id"]] = {"last_modified": last_modified}
+                current_base_file_ids.add(file_item["id"])
 
-                # 6b) Check manifest: skip if unchanged
-                old = manifest.get(f["id"], {})
-                if old.get("last_modified") == lm:
+                old = manifest.get(file_item["id"], {})
+                if old.get("last_modified") == last_modified:
                     chunk_count = old.get("chunk_count", 0) or 0
-                    if chunk_count:
-                        logger.info(f"  → '{f['name']}' unchanged. Reserving {chunk_count} old chunk IDs.")
-                        # CHANGES: reserve exact IDs for the unchanged version
-                        for i in range(chunk_count):
-                            all_current_ids.add(f"{f['id']}::{lm}::{i}")
-                    else:
-                        logger.info(f"  → '{f['name']}' unchanged, but old chunk_count was None/0, so no IDs reserved.")
+                    logger.info(f"  '{file_name}' unchanged. Keeping previous chunk count: {chunk_count}")
+                    new_manifest[file_item["id"]]["chunk_count"] = chunk_count
                     continue
 
-                # 6c) (Re)ingest this file because it’s new or modified
-                logger.info(f"  ⇒ Ingesting '{fname}' (lastModified: {lm})")
+                logger.info(f"  Ingesting '{file_name}' (lastModified: {last_modified})")
                 try:
-                    data      = download_file(token, drive_id, f["id"])
-                    text      = extract_docx_text(data)
-                    chunks    = chunk_text(text)
+                    data = download_file(token, drive_id, file_item["id"])
+                    text = extract_docx_text(data)
+                    chunks = chunk_text(text)
                     embeddings = embed_batches(chunks)
                 except Exception as e:
-                    logger.error(f"    • Error processing '{fname}': {e}")
-                    new_manifest[f["id"]]["chunk_count"] = 0
+                    logger.error(f"  Error processing '{file_name}': {e}")
+                    new_manifest[file_item["id"]]["chunk_count"] = 0
                     continue
 
                 if not chunks:
-                    logger.warning(f"    • No text extracted from '{fname}'. Skipping upsert.")
-                    new_manifest[f["id"]]["chunk_count"] = 0
+                    logger.warning(f"  No text extracted from '{file_name}'. Skipping upsert.")
+                    new_manifest[file_item["id"]]["chunk_count"] = 0
                     continue
 
-                # CHANGES: version-aware IDs → new version appends, same version overwrites
-                ids = [f"{f['id']}::{lm}::{i}" for i in range(len(chunks))]
-                all_current_ids.update(ids)
-                new_manifest[f["id"]]["chunk_count"] = len(chunks)
-
+                ids = [f"{file_item['id']}::{last_modified}::{index}" for index in range(len(chunks))]
                 metadatas = [
                     {
-                        "source":        f["webUrl"],
-                        "file_name":     fname,
-                        "folder":        folder["name"],
-                        "name":         folder["name"],
-                        "chunk_index":   i,
-                        "last_modified": lm,
+                        "source": file_item["webUrl"],
+                        "file_name": file_name,
+                        "folder": folder["name"],
+                        "name": folder["name"],
+                        "chunk_index": index,
+                        "last_modified": last_modified,
                     }
-                    for i in range(len(chunks))
+                    for index in range(len(chunks))
                 ]
 
-                # 6d) Upsert into Chroma (idempotent for same version)
                 try:
                     collection.upsert(ids=ids, documents=chunks, metadatas=metadatas, embeddings=embeddings)
-                    logger.info(f"    • Upserted {len(chunks)} chunks for '{fname}'")
-                    # Log the FIELD_VALUE (person's name) if successfully loaded
-                    logger.info(f"Successfully loaded to ChromaDB: {FIELD_VALUE}")
+                    logger.info(f"  Upserted {len(chunks)} chunks for '{file_name}'")
+                    logger.info(f"Successfully loaded to ChromaDB: {run_label}")
+                    total_upserted += len(chunks)
+                    new_manifest[file_item["id"]]["chunk_count"] = len(chunks)
                 except Exception as e:
-                    logger.error(f"    • Error upserting '{fname}': {e}")
-                    continue
+                    logger.error(f"  Error upserting '{file_name}': {e}")
+                    new_manifest[file_item["id"]]["chunk_count"] = 0
 
-                total_upserted += len(chunks)
-
-                # 6e) Immediately verify that the chunks were written
-                try:
-                    check_resp = collection.get(include=["documents", "metadatas", "embeddings"])
-                    current_ids = check_resp["ids"]
-                    logger.info(f"    → After upsert, collection size: {len(current_ids)} chunks")
-                except Exception as e:
-                    logger.warning(f"    → Could not verify collection size after upsert: {e}")
-
-        # 7) Report how many were upserted
         logger.info(f"Total new chunks ingested this run: {total_upserted}")
-
-        # 8) Cleanup: delete any vectors whose files are no longer present (opt-in)
-        logger.info("—— Cleanup Phase —————————————————————————————————————————")
-        if not ENABLE_CLEANUP:
-            logger.info("Cleanup disabled (ENABLE_CLEANUP=0). Skipping deletion of any existing vectors.")
-        else:
-            try:
-                before_resp = collection.get(include=["metadatas"])
-                before_ids  = before_resp["ids"]
-                logger.info(f"Existing IDs before cleanup: {len(before_ids)}")
-
-                def base_of(vid: str) -> str:
-                    # our new scheme: fileId::{lm}::{i}
-                    if "::" in vid:
-                        return vid.split("::", 1)[0]
-                    # fallback: old scheme compatibility (best effort)
-                    return vid.split("_", 1)[0]
-
-                to_delete = []
-                for vid in before_ids:
-                    base = base_of(vid)
-                    # delete only if the underlying file is no longer present this run
-                    # (i.e., removed from SharePoint). This preserves old versions.
-                    if base not in current_base_file_ids:
-                        to_delete.append(vid)
-
-                if to_delete:
-                    logger.info(f"  • Deleting {len(to_delete)} stale chunk IDs for files no longer present...")
-                    try:
-                        collection.delete(ids=to_delete)
-                    except Exception as e:
-                        logger.error(f"  • Error deleting stale IDs: {e}")
-                else:
-                    logger.info("  • No stale IDs to delete.")
-            except Exception as e:
-                logger.warning(f"Cleanup skipped due to error reading collection: {e}")
-
-            try:
-                after_resp = collection.get()
-                after_ids  = after_resp["ids"]
-                logger.info(f"Collection size after cleanup: {len(after_ids)}")
-            except Exception as e:
-                logger.warning(f"Could not fetch collection size after cleanup: {e}")
-
-        # 9) Persist the new manifest
-        # Merge new_manifest with the old manifest to keep all previous entries unless replaced
+        cleanup_deleted_files(collection, current_base_file_ids)
         merged_manifest = manifest.copy()
         merged_manifest.update(new_manifest)
-        with open(MANIFEST_PATH, "w") as f:
-            json.dump(merged_manifest, f, indent=2)
-        logger.info("Manifest written. Next run will skip unchanged files.")
-
-        # 10) Cleanly shut down Chroma’s background threads:
+        write_manifest(merged_manifest)
+    finally:
         try:
             client.shutdown()
             logger.info("Chroma client shutdown complete.")
         except AttributeError:
             pass
 
-        logger.info("Ingestion run complete.")
-    except Exception as e:
+    logger.info("Ingestion run complete.")
+
+
+def run_ingestion(FIELD_VALUE: str, TOP_FOLDER: str) -> None:
+    try:
+        manifest = load_manifest()
+        token = get_access_token()
+        site_id = get_site_id(token)
+        drive_id = get_drive_id(token, site_id)
+        folders = get_target_folders(token, drive_id, TOP_FOLDER, FIELD_VALUE)
+        if not folders:
+            return
+        ingest_folders(token, drive_id, folders, manifest, run_label=FIELD_VALUE)
+    except Exception:
         logger.exception("Fatal error in run_ingestion.")
         raise
 
-# Provide a public function for external calls
 
-# def ingest_sharepoint_cv():
-#     run_ingestion()
+def run_full_ingestion() -> None:
+    try:
+        manifest = load_manifest()
+        token = get_access_token()
+        site_id = get_site_id(token)
+        drive_id = get_drive_id(token, site_id)
+        folders = get_all_top_level_folders(token, drive_id)
+        if not folders:
+            logger.warning(f"No top-level folders found in library '{LIBRARY_NAME}'.")
+            return
+        ingest_folders(token, drive_id, folders, manifest, run_label="ALL_DOCX")
+    except Exception:
+        logger.exception("Fatal error in run_full_ingestion.")
+        raise
+
 
 if __name__ == "__main__":
-    run_ingestion(FIELD_VALUE=FIELD_VALUE, TOP_FOLDER=TOP_FOLDER)
+    if INGEST_ALL_DOCX:
+        run_full_ingestion()
+    else:
+        run_ingestion(FIELD_VALUE=FIELD_VALUE, TOP_FOLDER=TOP_FOLDER)
