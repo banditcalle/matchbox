@@ -1,0 +1,6 @@
+area,vendor,aliases
+Databricks,Databricks,"databricks"
+Azure Data Platform,Microsoft,"microsoft azure|azure|synapse|data factory|fabric"
+AWS Data Platform,AWS,"aws|amazon web services|glue|athena|redshift"
+Snowflake,Snowflake,"snowflake"
+Power BI,Microsoft,"power bi|pbi"
