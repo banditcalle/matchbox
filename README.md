@@ -30,6 +30,14 @@ python Test.py
 - The script will authenticate, locate the specified folders, process `.docx` files, extract and embed their content, and upsert the data into ChromaDB.
 - A manifest file (`ingest_manifest.json`) tracks processed files and chunk counts for incremental updates.
 
+## Skills And Certifications
+This repository also includes a workflow for extracting skills and certifications from ingested CVs and summarizing the results per grouped consultant.
+
+- `structure_skills_from_list.py` uses `knowledge_areas.csv` and `certifications.csv` to create structured JSON output from ChromaDB or sample profile files.
+- `query_company_skills_report.py` lets you inspect the generated JSON report from the terminal and output Excel-friendly table data.
+- See [skills_certifications_notes.md](./skills_certifications_notes.md) for the taxonomy and extraction model.
+- See [query_company_skills_report.md](./query_company_skills_report.md) for query modes, examples, and delimiter options.
+
 ## File Overview
 - `Test.py` — Main ingestion pipeline script.
 - `ingest_manifest.json` — Tracks processed files and chunk counts.

@@ -1,0 +1,2 @@
+Anna has worked with Databricks for 3 years and built pipelines in Azure Data Factory since 2021.
+She holds Databricks Certified Data Engineer Associate and Microsoft Certified: Azure Data Engineer Associate.
