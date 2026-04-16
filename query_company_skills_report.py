@@ -41,6 +41,19 @@ def print_area_summary(report: dict, top: int | None) -> None:
         )
 
 
+def print_experience_summary(report: dict, top: int | None) -> None:
+    rows = report.get("summary", {}).get("experience_summary", [])
+    if top is not None:
+        rows = rows[:top]
+
+    print("Experience summary")
+    for row in rows:
+        print(
+            f"- {row['experience_name']}: "
+            f"{row['profiles_with_experience']} people"
+        )
+
+
 def print_profile(profile: dict) -> None:
     print(f"Name: {profile.get('person_name') or profile.get('profile_id')}")
     if profile.get("company"):
@@ -49,12 +62,20 @@ def print_profile(profile: dict) -> None:
         print(f"CV count: {profile['cv_count']}")
 
     certs = profile.get("certifications", [])
+    experiences = profile.get("experiences", [])
     areas = profile.get("areas", [])
 
     print("Certifications:")
     if certs:
         for cert in certs:
             print(f"- {cert['certification_name']}")
+    else:
+        print("- none")
+
+    print("Experiences:")
+    if experiences:
+        for experience in experiences:
+            print(f"- {experience['experience_name']}")
     else:
         print("- none")
 
@@ -85,6 +106,25 @@ def print_people_with_cert(report: dict, certification_name: str) -> None:
         print(f"- {name} ({company})")
 
 
+def print_people_with_experience(report: dict, experience_name: str) -> None:
+    wanted = experience_name.casefold()
+    matches = []
+    for profile in report.get("profiles", []):
+        experience_names = [experience["experience_name"] for experience in profile.get("experiences", [])]
+        if any(name.casefold() == wanted for name in experience_names):
+            matches.append(profile)
+
+    print(f"People with experience: {experience_name}")
+    if not matches:
+        print("- none")
+        return
+
+    for profile in sorted(matches, key=lambda p: (p.get("person_name") or p.get("profile_id", "")).casefold()):
+        name = profile.get("person_name") or profile.get("profile_id")
+        company = profile.get("company", "")
+        print(f"- {name} ({company})")
+
+
 def print_people_with_all_certs(report: dict, top: int | None) -> None:
     rows = report.get("summary", {}).get("certification_summary", [])
     if top is not None:
@@ -102,6 +142,33 @@ def print_people_with_all_certs(report: dict, top: int | None) -> None:
         for profile in report.get("profiles", []):
             cert_names = [cert["certification_name"] for cert in profile.get("certifications", [])]
             if any(name.casefold() == wanted for name in cert_names):
+                matches.append(profile)
+
+        if not matches:
+            print("- none")
+            continue
+
+        for profile in sorted(matches, key=lambda p: (p.get("person_name") or p.get("profile_id", "")).casefold()):
+            name = profile.get("person_name") or profile.get("profile_id")
+            company = profile.get("company", "")
+            print(f"- {name} ({company})")
+
+
+def print_people_with_all_experiences(report: dict, top: int | None) -> None:
+    rows = report.get("summary", {}).get("experience_summary", [])
+    if top is not None:
+        rows = rows[:top]
+
+    for idx, row in enumerate(rows, start=1):
+        if idx > 1:
+            print()
+        experience_name = row["experience_name"]
+        print(f"{experience_name}: {row['profiles_with_experience']} people")
+        wanted = experience_name.casefold()
+        matches = []
+        for profile in report.get("profiles", []):
+            experience_names = [experience["experience_name"] for experience in profile.get("experiences", [])]
+            if any(name.casefold() == wanted for name in experience_names):
                 matches.append(profile)
 
         if not matches:
@@ -173,6 +240,55 @@ def write_people_with_all_certs_table(report: dict, top: int | None, delimiter_n
             )
 
 
+def write_people_with_all_experiences_table(report: dict, top: int | None, delimiter_name: str) -> None:
+    rows = report.get("summary", {}).get("experience_summary", [])
+    if top is not None:
+        rows = rows[:top]
+
+    writer = csv.writer(sys.stdout, delimiter=resolve_delimiter(delimiter_name), lineterminator="\n")
+    writer.writerow(
+        [
+            "experience_name",
+            "profiles_with_experience",
+            "person_name",
+            "company",
+            "cv_count",
+        ]
+    )
+
+    for row in rows:
+        experience_name = row["experience_name"]
+        wanted = experience_name.casefold()
+        matches = []
+        for profile in report.get("profiles", []):
+            experience_names = [experience["experience_name"] for experience in profile.get("experiences", [])]
+            if any(name.casefold() == wanted for name in experience_names):
+                matches.append(profile)
+
+        if not matches:
+            writer.writerow(
+                [
+                    experience_name,
+                    row["profiles_with_experience"],
+                    "",
+                    "",
+                    "",
+                ]
+            )
+            continue
+
+        for profile in sorted(matches, key=lambda p: (p.get("person_name") or p.get("profile_id", "")).casefold()):
+            writer.writerow(
+                [
+                    experience_name,
+                    row["profiles_with_experience"],
+                    profile.get("person_name") or profile.get("profile_id"),
+                    profile.get("company", ""),
+                    profile.get("cv_count", ""),
+                ]
+            )
+
+
 def print_person(report: dict, name_query: str) -> None:
     wanted = name_query.casefold()
     matches = []
@@ -199,15 +315,20 @@ def main() -> None:
         choices=[
             "cert-summary",
             "area-summary",
+            "experience-summary",
             "people-with-cert",
+            "people-with-experience",
             "people-with-all-certs",
+            "people-with-all-experiences",
             "people-with-all-certs-table",
+            "people-with-all-experiences-table",
             "person",
         ],
         required=True,
     )
     parser.add_argument("--top", type=int, help="Limit number of summary rows.")
     parser.add_argument("--certification", help="Exact certification name to search for.")
+    parser.add_argument("--experience", help="Exact experience name to search for.")
     parser.add_argument("--name", help="Full or partial person name to search for.")
     parser.add_argument(
         "--delimiter",
@@ -227,18 +348,36 @@ def main() -> None:
         print_area_summary(report, args.top)
         return
 
+    if args.mode == "experience-summary":
+        print_experience_summary(report, args.top)
+        return
+
     if args.mode == "people-with-cert":
         if not args.certification:
             parser.error("--mode people-with-cert requires --certification")
         print_people_with_cert(report, args.certification)
         return
 
+    if args.mode == "people-with-experience":
+        if not args.experience:
+            parser.error("--mode people-with-experience requires --experience")
+        print_people_with_experience(report, args.experience)
+        return
+
     if args.mode == "people-with-all-certs":
         print_people_with_all_certs(report, args.top)
         return
 
+    if args.mode == "people-with-all-experiences":
+        print_people_with_all_experiences(report, args.top)
+        return
+
     if args.mode == "people-with-all-certs-table":
         write_people_with_all_certs_table(report, args.top, args.delimiter)
+        return
+
+    if args.mode == "people-with-all-experiences-table":
+        write_people_with_all_experiences_table(report, args.top, args.delimiter)
         return
 
     if args.mode == "person":

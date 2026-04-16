@@ -1,10 +1,12 @@
 .env
 .chroma-db/
+.venv/
 __pycache__/
 *.pyc
-ingest_manifest.jsontalentbridge.log
+ingest_manifest.json
+talentbridge.log
 talentbridge_errors.log
 logs/
 *.log
-ingest_manifest.json
 skills_certifications_report.json
+experiences.csv

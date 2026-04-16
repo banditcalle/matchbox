@@ -36,6 +36,13 @@ class Certification:
     aliases: List[str]
 
 
+@dataclass
+class Experience:
+    experience_name: str
+    category: str
+    aliases: List[str]
+
+
 def _split_aliases(value: str) -> List[str]:
     return [a.strip().lower() for a in (value or "").split("|") if a.strip()]
 
@@ -68,6 +75,19 @@ def load_certifications(path: str) -> List[Certification]:
                 vendor=row["vendor"].strip(),
                 area=row["area"].strip(),
                 level=row.get("level", "").strip(),
+                aliases=_split_aliases(row.get("aliases", "")),
+            )
+            for row in reader
+        ]
+
+
+def load_experiences(path: str) -> List[Experience]:
+    with open(path, "r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        return [
+            Experience(
+                experience_name=row["experience_name"].strip(),
+                category=row.get("category", "").strip(),
                 aliases=_split_aliases(row.get("aliases", "")),
             )
             for row in reader
@@ -111,6 +131,7 @@ def extract_profile_signals(
     text: str,
     knowledge_areas: List[KnowledgeArea],
     certifications: List[Certification],
+    experiences: List[Experience],
     now_year: int,
     metadata: Dict | None = None,
 ) -> Dict:
@@ -134,6 +155,25 @@ def extract_profile_signals(
                     }
                 )
                 seen_certifications.add(key)
+
+    experience_hits = []
+    seen_experiences = set()
+    for experience in experiences:
+        terms = [_normalize_for_match(experience.experience_name)] + [
+            _normalize_for_match(alias) for alias in experience.aliases
+        ]
+        matched_sentences = _find_sentences_with_aliases(text, terms)
+        if matched_sentences:
+            key = experience.experience_name.casefold()
+            if key not in seen_experiences:
+                experience_hits.append(
+                    {
+                        "experience_name": experience.experience_name,
+                        "category": experience.category,
+                        "evidence": matched_sentences[:5],
+                    }
+                )
+                seen_experiences.add(key)
 
     area_records = []
     for area in knowledge_areas:
@@ -170,12 +210,18 @@ def extract_profile_signals(
         **(metadata or {}),
         "areas": area_records,
         "certifications": cert_hits,
+        "experiences": experience_hits,
     }
 
 
-def summarize(signals: List[Dict], certifications: List[Certification] | None = None) -> Dict:
+def summarize(
+    signals: List[Dict],
+    certifications: List[Certification] | None = None,
+    experiences: List[Experience] | None = None,
+) -> Dict:
     by_area: Dict[str, Dict] = {}
     by_certification: Dict[str, Dict] = {}
+    by_experience: Dict[str, Dict] = {}
 
     for cert in certifications or []:
         cert_key = cert.certification_name.casefold()
@@ -187,6 +233,18 @@ def summarize(signals: List[Dict], certifications: List[Certification] | None = 
                 "area": cert.area,
                 "level": cert.level,
                 "profiles_with_certification": 0,
+                "hits_total": 0,
+            },
+        )
+
+    for experience in experiences or []:
+        experience_key = experience.experience_name.casefold()
+        by_experience.setdefault(
+            experience_key,
+            {
+                "experience_name": experience.experience_name,
+                "category": experience.category,
+                "profiles_with_experience": 0,
                 "hits_total": 0,
             },
         )
@@ -231,11 +289,33 @@ def summarize(signals: List[Dict], certifications: List[Certification] | None = 
                 rec["profiles_with_certification"] += 1
                 seen_in_profile.add(cert_key)
 
+        seen_experiences_in_profile = set()
+        for experience in profile.get("experiences", []):
+            experience_name = experience["experience_name"]
+            experience_key = experience_name.casefold()
+            rec = by_experience.setdefault(
+                experience_key,
+                {
+                    "experience_name": experience_name,
+                    "category": experience.get("category", ""),
+                    "profiles_with_experience": 0,
+                    "hits_total": 0,
+                },
+            )
+            rec["hits_total"] += 1
+            if experience_key not in seen_experiences_in_profile:
+                rec["profiles_with_experience"] += 1
+                seen_experiences_in_profile.add(experience_key)
+
     return {
         "area_summary": sorted(by_area.values(), key=lambda x: x["area"]),
         "certification_summary": sorted(
             by_certification.values(),
             key=lambda x: (-x["profiles_with_certification"], x["certification_name"]),
+        ),
+        "experience_summary": sorted(
+            by_experience.values(),
+            key=lambda x: (-x["profiles_with_experience"], x["experience_name"]),
         ),
         "profile_count": len(signals),
     }
@@ -460,12 +540,30 @@ def write_certifications_csv(path: str, certifications: List[str]) -> None:
             )
 
 
+def write_experiences_csv(path: str, experiences: List[str]) -> None:
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["experience_name", "category", "aliases"],
+        )
+        writer.writeheader()
+        for experience in experiences:
+            writer.writerow(
+                {
+                    "experience_name": experience,
+                    "category": "",
+                    "aliases": _slugify_area(experience),
+                }
+            )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Create starter taxonomy CSVs from a list file or structure profile text into JSON."
     )
     parser.add_argument("--knowledge-csv", default="knowledge_areas.csv")
     parser.add_argument("--certifications-csv", default="certifications.csv")
+    parser.add_argument("--experiences-csv", default="experiences.csv")
     parser.add_argument("--profiles-dir", help="Directory containing .txt profiles")
     parser.add_argument(
         "--from-chroma",
@@ -486,6 +584,7 @@ def main() -> None:
         knowledge_areas, certifications = parse_list_file(args.list_file)
         write_knowledge_areas_csv(args.knowledge_csv, knowledge_areas)
         write_certifications_csv(args.certifications_csv, certifications)
+        write_experiences_csv(args.experiences_csv, [])
         print(
             f"Wrote {args.knowledge_csv} ({len(knowledge_areas)} rows) and "
             f"{args.certifications_csv} ({len(certifications)} rows) from {args.list_file}."
@@ -498,6 +597,7 @@ def main() -> None:
 
     knowledge_areas = load_knowledge_areas(args.knowledge_csv)
     certifications = load_certifications(args.certifications_csv)
+    experiences = load_experiences(args.experiences_csv)
 
     if args.from_chroma:
         if not args.chroma_dir or not args.collection_name:
@@ -514,6 +614,7 @@ def main() -> None:
             text=text,
             knowledge_areas=knowledge_areas,
             certifications=certifications,
+            experiences=experiences,
             now_year=args.now_year,
             metadata=metadata,
         )
@@ -522,7 +623,7 @@ def main() -> None:
 
     payload = {
         "profiles": signals,
-        "summary": summarize(signals, certifications=certifications),
+        "summary": summarize(signals, certifications=certifications, experiences=experiences),
     }
 
     with open(args.output, "w", encoding="utf-8") as f:

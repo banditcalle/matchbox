@@ -10,7 +10,7 @@ from chromadb import PersistentClient
 from docx import Document
 from dotenv import load_dotenv
 from msal import ConfidentialClientApplication
-from openai import OpenAI
+import openai
 
 
 load_dotenv()
@@ -105,7 +105,7 @@ logger.info(f"Using COLLECTION_NAME = '{COLLECTION_NAME}'")
 logger.info(f"Using MANIFEST_PATH = '{MANIFEST_PATH}'")
 logger.info(f"INGEST_ALL_DOCX = {INGEST_ALL_DOCX}")
 
-openai_client = OpenAI(api_key=OPENAI_API_KEY)
+openai.api_key = OPENAI_API_KEY
 
 
 def get_access_token() -> str:
@@ -212,8 +212,8 @@ def chunk_text(text: str, max_tokens: int = 500, overlap: int = 50) -> List[str]
 def embed_batches(texts: List[str], model: str = EMBEDDING_MODEL) -> List[List[float]]:
     if not texts:
         return []
-    response = openai_client.embeddings.create(input=texts, model=model)
-    return [item.embedding for item in response.data]
+    response = openai.Embedding.create(input=texts, model=model)
+    return [item["embedding"] for item in response["data"]]
 
 
 def init_vector_store() -> PersistentClient:
