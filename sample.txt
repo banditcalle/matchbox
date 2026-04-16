@@ -1,0 +1,5 @@
+# Knowledge areas (comma-separated)
+Databricks, Microsoft Azure, AWS, Snowflake, Power BI
+
+# Certifications (comma-separated)
+Databricks Certified Data Engineer Associate, Databricks Certified Data Engineer Professional, Databricks Certified Data Analyst Associate, Microsoft Certified: Azure Data Engineer Associate, Microsoft Certified: Fabric Analytics Engineer Associate, AWS Certified Data Engineer - Associate, SnowPro Core Certification
